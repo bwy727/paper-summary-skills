@@ -45,3 +45,16 @@ description: 读取文献文件夹（默认 note，递归含子文件夹）中�
 ## 注意
 - 自动跳过以 `~$` 开头的 Word 临时文件。
 - 文件名支持中英文混合与较长名称，按原样保留。
+
+## 大批量处理模式（文献数 > 20 篇时推荐，在 `/loop` 下运行）
+
+当 `new_count` 较大时，建议改用下列批量并行流程以大幅提速：
+
+1. **预提取文本**：写小脚本读 `_work/archiving_extract.json`，将每篇 `new[i].text` 分别写入 `_work/r/000.txt`、`001.txt`……（每篇一个文件，文件头加 `FILENAME: <原文件名>` 一行）。
+2. **分批派发 agent**：每批约 12 篇，每个 agent 独立读取一个 txt 文件，按列模板生成对应的 `row` JSON 后返回。
+3. **汇总写入**：将各 agent 的返回值合并写入 `_work/rows_bN.json`，再执行 `archiving.py write`。为避免 Windows shell 引号问题，推荐将汇总数据写成临时脚本 `_work/gen_bN.py`，由 Python 直接 `json.dump` 输出 json 文件。
+4. **Auto-Continue 检查点**：每批派发前读取控制文件（`~/.claude/auto_continue/control.json`）：
+   - `state == "RUN"` → 继续派发；
+   - `state == "PAUSE"` → 保存当前批次索引到 `CLAUDE.md`，停止派发，等待下轮 `/loop` 自动恢复；
+   - 文件缺失 / 解析失败 / 时间戳超过 40 分钟 → 视为 RUN。
+5. **增量去重**：`archiving.py write` 按文献名自动去重，每批写入后可安全中断并重启，不会产生重复行。

@@ -36,3 +36,13 @@ description: 整理文献标签。读取文献文件夹（默认 note，递归�
 ## 注意
 - 自动跳过以 `~$` 开头的 Word 临时文件，增量更新已有矩阵。
 - 提醒用户：详细的筛选/检索操作见生成的 `searching_readme.md`。
+
+## 大批量处理模式（文献数 > 20 篇时推荐，在 `/loop` 下运行）
+
+与 summary_archiving 并行：同一批 agent 在生成 `row` 的同时，也提取并返回关键词列表，两项工作合并在一次 agent 调用中完成：
+
+1. **预提取文本**：复用 summary_archiving 预提取的 `_work/r/NNN.txt` 文件（若单独运行 summary_grouping，则用 `grouping_extract.json` 的 `new[i].text` 同样预提取）。
+2. **分批派发 agent**：每个 agent 读取一篇 txt，同时返回 `row`（文献总结）和 `keywords`（关键词列表）。
+3. **关键词一致性**：agent 提示中须附上 `existing_keywords` 列表，要求复用已有表述，禁止造同义新词。
+4. **汇总写入**：将各 agent 的 `keywords` 汇总写入 `_work/kw_bN.json`，再执行 `grouping.py write`。
+5. **Auto-Continue 检查点**与 **增量去重** 规则同 summary_archiving：每批前检查控制文件，`grouping.py write` 按文献名自动去重。

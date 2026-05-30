@@ -83,7 +83,66 @@ pip install python-docx openpyxl
 
 ---
 
-## 五、各技能详解
+## 五、大规模批量处理与 Auto-Continue 集成
+
+当文献数量较多（> 20 篇）时，建议使用 `/loop` 模式配合批量并行处理，并可选集成 **Auto-Continue** 技能，在接近 Claude 5-hour 用量上限时自动暂停/恢复，无需人工守候。
+
+### 5.1 `/loop` 批量处理模式
+
+在 Claude Code 中，以 `/loop` 启动技能调用：
+
+```
+/loop 总结文献
+/loop 整理文献标签
+```
+
+技能会自动循环执行以下步骤，直到所有新文献处理完毕：
+
+1. 用 `extract` 命令找出尚未处理的新文献；
+2. 将文献文本预先提取到 `_work/r/` 目录（每篇一个 `.txt` 文件）；
+3. 分批（每批约 12 篇）派发并行 agent，每个 agent 独立处理一篇，返回 JSON；
+4. 每批处理完毕后写入 xlsx，然后检查 Auto-Continue 控制文件，决定继续还是暂停；
+5. 全部处理完毕后，用 `extract` 验证 `new_count == 0`，`/loop` 自动结束。
+
+**效率说明**：12 个 agent 并行运行，处理速度约为逐篇串行的 10 倍，百篇文献通常在 2–3 个 `/loop` 迭代内完成。
+
+### 5.2 Auto-Continue 集成（可选）
+
+[Auto-Continue](https://github.com/CrisChenYingyan/auto-continue) 是一个独立的监控进程，定期读取 Claude 网页版的 5-hour 用量百分比，并将 `state: "RUN" / "PAUSE"` 写入本地控制文件（默认路径：`~/.claude/auto_continue/control.json`）。
+
+本技能在以下**安全检查点**读取控制文件：
+
+- 每次 `/loop` 迭代开始时
+- 派发每批并行 agent 之前
+
+| 读到的 `state` | 行为 |
+| --- | --- |
+| `"RUN"` | 继续派发下一批 |
+| `"PAUSE"` | 完成当前最小原子步骤 → 保存进度到 `CLAUDE.md` → 等待下轮 `/loop` 自动唤醒 |
+| 文件缺失 / 解析失败 / 时间戳超过 40 分钟 | 视为 `RUN`，正常处理，不卡死 |
+
+恢复时，配合增量去重（`extract` 只返回尚未处理的文献），从中断处继续，**不重复处理已完成文献**。
+
+### 5.3 工作目录结构（`_work/`）
+
+批量处理过程中，中间结果存储在 `_work/` 目录（已被 `.gitignore` 排除，不上传 GitHub）：
+
+```
+_work/
+├─ archiving_extract.json   # extract 输出（含待处理文献列表与 text）
+├─ grouping_extract.json    # grouping extract 输出
+├─ r/
+│   ├─ 000.txt              # 第 0 篇文献的完整文本（供 agent 读取）
+│   ├─ 001.txt
+│   └─ ...
+├─ rows_b1.json             # 第 1 批 agent 汇总的文献总结 rows
+├─ kw_b1.json               # 第 1 批 agent 汇总的关键词
+└─ gen_b1.py                # 生成上述 json 的临时脚本（可删除）
+```
+
+---
+
+## 六、各技能详解
 
 ### 1. summary_archiving — 文献总结表
 
@@ -139,7 +198,7 @@ pip install python-docx openpyxl
 
 ---
 
-## 六、目录结构
+## 七、目录结构
 
 ```
 paper-summary-skills\
@@ -156,7 +215,7 @@ paper-summary-skills\
 
 ---
 
-## 七、注意事项
+## 八、注意事项
 
 - **文件名**：支持中英文混合与较长文件名，处理时按原样保留；去重以「文件名（去扩展名、去首尾空格）」为准。
 - **临时文件**：自动跳过以 `~$` 开头的 Word 临时文件。
@@ -165,6 +224,6 @@ paper-summary-skills\
 
 ---
 
-## 八、许可证
+## 九、许可证
 
 MIT License。欢迎自由使用、修改与分发。
