@@ -11,12 +11,12 @@ answering.py — 文献问答工具
        "archiving": {"columns":[...], "rows":[{...}]}}
       （供 Claude 据问题语义筛选文献）
 
-  scandocx --folder note
-      无表时的兜底：递归读取 docx 全文，输出 [{"filename","stem","text"},...]
+  scanmd --folder note
+      无表时的兜底：递归读取 md 全文，输出 [{"filename","stem","text"},...]
 
-  gendoc --out 关键词.docx --data names.json
-      names.json = {"question":str, "direct":[文件名...], "related":[文件名...]}
-      生成文献名单 docx。
+  genmd --out 关键词.md --data names.json
+      names.json = {"question":str, "direct":[{"name","note"}...], "related":[...]}
+      生成文献名单 markdown。
 
   filter --archiving paper_archiving.xlsx --names names.json --out 关键词_文献总结筛选.xlsx
       从文献总结表中筛出这些文献名对应的行，另存为新表（保留表头与格式）。
@@ -28,7 +28,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Windows 控制台默认 GBK，docx 中的非 GBK 字符会导致 print 崩溃 —— 强制 UTF-8。
+# Windows 控制台默认 GBK，文献中的非 GBK 字符会导致 print 崩溃 —— 强制 UTF-8。
 try:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
@@ -43,13 +43,17 @@ def _ensure(pip_name, mod_name):
         subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name, "-q"])
 
 
-_ensure("python-docx", "docx")
 _ensure("openpyxl", "openpyxl")
 
-import docx  # noqa: E402
 from openpyxl import Workbook, load_workbook  # noqa: E402
 from openpyxl.styles import Alignment, Font, PatternFill  # noqa: E402
 from openpyxl.utils import get_column_letter  # noqa: E402
+
+# summary_note 生成的阅读笔记统一命名为 <论文标题>_note.md，该后缀不计入文献名。
+NOTE_SUFFIX = "_note"
+# 递归时跳过的工作目录与生成物
+SKIP_DIRS = {"_work", ".git"}
+SKIP_FILES = {"searching_readme.md"}
 
 
 def norm(s):
@@ -57,28 +61,29 @@ def norm(s):
 
 
 def stem_key(name):
-    return norm(Path(str(name)).stem)
+    """文献名键：md 文件名去扩展名，并去除结尾的 `_note` 后缀。"""
+    stem = norm(Path(str(name)).stem)
+    if stem.lower().endswith(NOTE_SUFFIX):
+        stem = stem[: -len(NOTE_SUFFIX)].rstrip()
+    return stem
 
 
-def docx_to_text(path):
-    d = docx.Document(str(path))
-    parts = []
-    for p in d.paragraphs:
-        if p.text.strip():
-            parts.append(p.text)
-    for t in d.tables:
-        for row in t.rows:
-            cells = [c.text.strip() for c in row.cells]
-            if any(cells):
-                parts.append(" | ".join(cells))
-    return "\n".join(parts)
+def md_to_text(path):
+    return Path(str(path)).read_text(encoding="utf-8", errors="replace")
 
 
-def list_docx(folder):
+def list_md(folder):
     root = Path(folder)
     if not root.exists():
         return []
-    return sorted(p for p in root.rglob("*.docx") if not p.name.startswith("~$"))
+    out = []
+    for p in root.rglob("*.md"):
+        if p.name.startswith(".") or p.name in SKIP_FILES:
+            continue
+        if any(part in SKIP_DIRS for part in p.relative_to(root).parts[:-1]):
+            continue
+        out.append(p)
+    return sorted(out)
 
 
 def read_keyword(xlsx):
@@ -132,9 +137,9 @@ def cmd_dump(args):
           {"has_keyword": out["has_keyword"], "has_archiving": out["has_archiving"]})
 
 
-def cmd_scandocx(args):
-    res = [{"filename": p.name, "stem": p.stem, "text": docx_to_text(p)}
-           for p in list_docx(args.folder)]
+def cmd_scanmd(args):
+    res = [{"filename": p.name, "stem": stem_key(p.name), "text": md_to_text(p)}
+           for p in list_md(args.folder)]
     _emit(res, args.json_out, {"count": len(res)})
 
 
@@ -147,29 +152,28 @@ def item_note(it):
     return it.get("note", "") if isinstance(it, dict) else ""
 
 
-def _add_section(d, heading, items, note_label):
-    d.add_heading(heading, level=1)
+def _md_section(lines, heading, items, note_label):
+    lines.append("## %s" % heading)
+    lines.append("")
     if not items:
-        d.add_paragraph("（无）")
-        return
-    for it in items:
-        name = item_name(it)
-        note = item_note(it)
-        p = d.add_paragraph(style="List Bullet")
-        p.add_run(name).bold = True
-        if note:
-            d.add_paragraph("%s%s" % (note_label, note))
+        lines.append("（无）")
+    else:
+        for it in items:
+            lines.append("- **%s**" % item_name(it))
+            note = item_note(it)
+            if note:
+                lines.append("  - %s%s" % (note_label, note))
+    lines.append("")
 
 
-def cmd_gendoc(args):
+def cmd_genmd(args):
     data = json.loads(Path(args.data).read_text(encoding="utf-8"))
-    d = docx.Document()
-    d.add_heading(data.get("question", "文献名单"), level=0)
     direct = data.get("direct", [])
     related = data.get("related", [])
-    _add_section(d, "可直接回答的文献", direct, "如何回答：")
-    _add_section(d, "话题相关的文献", related, "相关之处：")
-    d.save(args.out)
+    lines = ["# %s" % data.get("question", "文献名单"), ""]
+    _md_section(lines, "可直接回答的文献", direct, "如何回答：")
+    _md_section(lines, "话题相关的文献", related, "相关之处：")
+    Path(args.out).write_text("\n".join(lines), encoding="utf-8")
     print(json.dumps({"out": args.out, "direct": len(direct), "related": len(related)},
                      ensure_ascii=False))
 
@@ -221,15 +225,15 @@ def main():
     d.add_argument("--json-out", dest="json_out", default=None)
     d.set_defaults(func=cmd_dump)
 
-    s = sub.add_parser("scandocx")
+    s = sub.add_parser("scanmd")
     s.add_argument("--folder", default="note")
     s.add_argument("--json-out", dest="json_out", default=None)
-    s.set_defaults(func=cmd_scandocx)
+    s.set_defaults(func=cmd_scanmd)
 
-    g = sub.add_parser("gendoc")
+    g = sub.add_parser("genmd")
     g.add_argument("--out", required=True)
     g.add_argument("--data", required=True)
-    g.set_defaults(func=cmd_gendoc)
+    g.set_defaults(func=cmd_genmd)
 
     f = sub.add_parser("filter")
     f.add_argument("--archiving", default="paper_archiving.xlsx")

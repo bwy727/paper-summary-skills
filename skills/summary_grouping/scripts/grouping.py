@@ -5,12 +5,14 @@ grouping.py — 文献分组表（keyword_summary.xlsx，关键词矩阵）工�
 
 子命令：
   extract --folder note --out keyword_summary.xlsx
-      输出 JSON：
+      递归列出 folder 下尚未收录的 .md，输出 JSON：
       {"existing_keywords":[...], "existing_papers":[...], "new":[{"filename","stem","text"},...]}
       （供 Claude 复用已有关键词、为新文献提关键词，保持关键词一致性）
+      文献名取 md 文件名（去扩展名），并去除结尾的 `_note` 后缀
+      （summary_note 生成的阅读笔记统一命名为 <论文标题>_note.md）。
 
   write --out keyword_summary.xlsx --data kw.json
-      kw.json 为 [{"文献名":"xx.docx","keywords":["a","b",...]}, ...]
+      kw.json 为 [{"文献名":"xx.md","keywords":["a","b",...]}, ...]
       建立/更新矩阵：第一列文献名，其后每个关键词一列，文献含该关键词则标 X。
       开启自动筛选、冻结首列与表头、自动换行；并在同目录生成 searching_readme.md。
 """
@@ -21,7 +23,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Windows 控制台默认 GBK，docx 中的非 GBK 字符会导致 print 崩溃 —— 强制 UTF-8。
+# Windows 控制台默认 GBK，文献中的非 GBK 字符会导致 print 崩溃 —— 强制 UTF-8。
 try:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
@@ -36,13 +38,17 @@ def _ensure(pip_name, mod_name):
         subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name, "-q"])
 
 
-_ensure("python-docx", "docx")
 _ensure("openpyxl", "openpyxl")
 
-import docx  # noqa: E402
 from openpyxl import Workbook, load_workbook  # noqa: E402
 from openpyxl.styles import Alignment, Font, PatternFill  # noqa: E402
 from openpyxl.utils import get_column_letter  # noqa: E402
+
+# summary_note 生成的阅读笔记统一命名为 <论文标题>_note.md，该后缀不计入文献名。
+NOTE_SUFFIX = "_note"
+# 递归时跳过的工作目录与生成物
+SKIP_DIRS = {"_work", ".git"}
+SKIP_FILES = {"searching_readme.md"}
 
 
 def norm(s):
@@ -50,28 +56,29 @@ def norm(s):
 
 
 def stem_key(name):
-    return norm(Path(str(name)).stem)
+    """文献名键：md 文件名去扩展名，并去除结尾的 `_note` 后缀。"""
+    stem = norm(Path(str(name)).stem)
+    if stem.lower().endswith(NOTE_SUFFIX):
+        stem = stem[: -len(NOTE_SUFFIX)].rstrip()
+    return stem
 
 
-def docx_to_text(path):
-    d = docx.Document(str(path))
-    parts = []
-    for p in d.paragraphs:
-        if p.text.strip():
-            parts.append(p.text)
-    for t in d.tables:
-        for row in t.rows:
-            cells = [c.text.strip() for c in row.cells]
-            if any(cells):
-                parts.append(" | ".join(cells))
-    return "\n".join(parts)
+def md_to_text(path):
+    return Path(str(path)).read_text(encoding="utf-8", errors="replace")
 
 
-def list_docx(folder):
+def list_md(folder):
     root = Path(folder)
     if not root.exists():
         return []
-    return sorted(p for p in root.rglob("*.docx") if not p.name.startswith("~$"))
+    out = []
+    for p in root.rglob("*.md"):
+        if p.name.startswith(".") or p.name in SKIP_FILES:
+            continue
+        if any(part in SKIP_DIRS for part in p.relative_to(root).parts[:-1]):
+            continue
+        out.append(p)
+    return sorted(out)
 
 
 def load_matrix(xlsx):
@@ -100,10 +107,10 @@ def cmd_extract(args):
     keywords, rows = load_matrix(args.out)
     existing_papers = [stem_key(r["文献名"]) for r in rows]
     new = []
-    for p in list_docx(args.folder):
+    for p in list_md(args.folder):
         if stem_key(p.name) in existing_papers:
             continue
-        new.append({"filename": p.name, "stem": p.stem, "text": docx_to_text(p)})
+        new.append({"filename": p.name, "stem": stem_key(p.name), "text": md_to_text(p)})
     obj = {
         "existing_keywords": keywords,
         "existing_papers": [r["文献名"] for r in rows],
