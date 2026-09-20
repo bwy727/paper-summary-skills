@@ -27,5 +27,7 @@ description: 文献总结主技能（意图路由）。当用户要处理、总�
 
 ## 约定
 
-- 默认文献文件夹为项目根目录下的 `note\`（递归含子文件夹）；所有输出生成在项目根目录。
+- 输入文件夹（文献来源）统一为 `D:\AIacademic\ReadPaper\notes_done`（递归含子文件夹）。
+- 输出文件夹统一为 `D:\AIacademic\ReadPaper\xlsx_summary`：`paper_archiving.xlsx`、`keyword_summary.xlsx`、`searching_readme.md`、`<问题关键词>.md` 均生成于此。
+- 三个子技能的脚本默认值与上述路径一致，用户未另指定时无需显式传路径。
 - 术语保持一致：文献总结表＝`paper_archiving.xlsx`；文献分组表＝`keyword_summary.xlsx`。

@@ -4,17 +4,20 @@
 grouping.py — 文献分组表（keyword_summary.xlsx，关键词矩阵）工具
 
 子命令：
-  extract --folder note --out keyword_summary.xlsx
+  extract [--folder IN_DIR] [--out OUT_DIR/keyword_summary.xlsx]
       递归列出 folder 下尚未收录的 .md，输出 JSON：
       {"existing_keywords":[...], "existing_papers":[...], "new":[{"filename","stem","text"},...]}
       （供 Claude 复用已有关键词、为新文献提关键词，保持关键词一致性）
-      文献名取 md 文件名（去扩展名），并去除结尾的 `_note` 后缀
-      （summary_note 生成的阅读笔记统一命名为 <论文标题>_note.md）。
+      文献名取 md 文件名（去扩展名），并去掉开头的 `[note] ` 前缀
+      （summary_note 生成的阅读笔记统一命名为 `[note] <论文标题>.md`）。
 
   write --out keyword_summary.xlsx --data kw.json
       kw.json 为 [{"文献名":"xx.md","keywords":["a","b",...]}, ...]
       建立/更新矩阵：第一列文献名，其后每个关键词一列，文献含该关键词则标 X。
-      开启自动筛选、冻结首列与表头、自动换行；并在同目录生成 searching_readme.md。
+      开启自动筛选、冻结首列与表头、自动换行；并在同一输出文件夹内生成 searching_readme.md。
+
+默认路径：输入 IN_DIR = D:/AIacademic/ReadPaper/notes_done，
+输出 OUT_DIR = D:/AIacademic/ReadPaper/xlsx_summary。
 """
 import argparse
 import importlib
@@ -44,11 +47,15 @@ from openpyxl import Workbook, load_workbook  # noqa: E402
 from openpyxl.styles import Alignment, Font, PatternFill  # noqa: E402
 from openpyxl.utils import get_column_letter  # noqa: E402
 
-# summary_note 生成的阅读笔记统一命名为 <论文标题>_note.md，该后缀不计入文献名。
-NOTE_SUFFIX = "_note"
+# summary_note 生成的阅读笔记统一命名为 `[note] <论文标题>.md`，该前缀不计入文献名。
+NOTE_PREFIX = "[note]"
 # 递归时跳过的工作目录与生成物
 SKIP_DIRS = {"_work", ".git"}
 SKIP_FILES = {"searching_readme.md"}
+# 输入/输出路径约定
+IN_DIR = r"D:\AIacademic\ReadPaper\notes_done"
+OUT_DIR = r"D:\AIacademic\ReadPaper\xlsx_summary"
+
 
 
 def norm(s):
@@ -56,10 +63,10 @@ def norm(s):
 
 
 def stem_key(name):
-    """文献名键：md 文件名去扩展名，并去除结尾的 `_note` 后缀。"""
+    """文献名键：md 文件名去扩展名，并去掉开头的 `[note] ` 前缀。"""
     stem = norm(Path(str(name)).stem)
-    if stem.lower().endswith(NOTE_SUFFIX):
-        stem = stem[: -len(NOTE_SUFFIX)].rstrip()
+    if stem.lower().startswith(NOTE_PREFIX):
+        stem = stem[len(NOTE_PREFIX):].strip()
     return stem
 
 
@@ -213,12 +220,12 @@ def main():
     ap = argparse.ArgumentParser(description="文献分组表工具")
     sub = ap.add_subparsers(dest="cmd", required=True)
     e = sub.add_parser("extract")
-    e.add_argument("--folder", default="note")
-    e.add_argument("--out", default="keyword_summary.xlsx")
+    e.add_argument("--folder", default=IN_DIR)
+    e.add_argument("--out", default=str(Path(OUT_DIR) / "keyword_summary.xlsx"))
     e.add_argument("--json-out", dest="json_out", default=None)
     e.set_defaults(func=cmd_extract)
     w = sub.add_parser("write")
-    w.add_argument("--out", default="keyword_summary.xlsx")
+    w.add_argument("--out", default=str(Path(OUT_DIR) / "keyword_summary.xlsx"))
     w.add_argument("--data", required=True)
     w.set_defaults(func=cmd_write)
     args = ap.parse_args()

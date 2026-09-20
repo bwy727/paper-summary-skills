@@ -4,27 +4,23 @@
 archiving.py — 文献总结表（paper_archiving.xlsx）工具
 
 子命令：
-  extract --folder note --out paper_archiving.xlsx --json-out work.json
+  extract --folder notes_done --out xlsx_summary/paper_archiving.xlsx --json-out work.json
       递归列出 folder 下尚未收录的 .md，把结果写入 --json-out（UTF-8）：
       {"existing": [...已收录文献名...], "new": [{"filename","stem","text"}, ...]}
       并在 stdout 打印简短摘要（供 Claude 阅读 work.json 后逐篇生成总结）。
       不传 --json-out 则直接打印完整 JSON 到 stdout。
-      文献名取 md 文件名（去扩展名），并去除结尾的 `_note` 后缀
-      （summary_note 生成的阅读笔记统一命名为 <论文标题>_note.md）。
-      传 --pdf-dir 时，另为每篇模糊匹配原 PDF：先按年份筛（文献名中带年份时
-      只在年份相符的 PDF 里比标题），筛不出候选再退回全目录；
-      匹配置信度低于 0.6 视为未命中，命中则附加 "pdf"、"pdf_year"、"pdf_score"
-      三个键（经年份筛选命中的另加 "pdf_year_filter": true）。
+      文献名取 md 文件名（去扩展名），并去掉开头的 `[note] ` 前缀
+      （summary_note 生成的阅读笔记统一命名为 `[note] <论文标题>.md`）。
 
   write --out paper_archiving.xlsx --data rows.json
       rows.json 为 [{"文献名","发表年份","期刊","摘要","研究内容","主要结果","研究思路"}, ...]
       追加写入（按文献名去重，忽略重复），单元格自动换行、表头加粗、冻结首行。
+
+年份与期刊只依据文献本身（md 文件名与笔记正文）判断，本脚本不读取原 PDF。
 """
 import argparse
-import difflib
 import importlib
 import json
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -52,11 +48,15 @@ from openpyxl.utils import get_column_letter  # noqa: E402
 
 COLUMNS = ["文献名", "发表年份", "期刊", "摘要", "研究内容", "主要结果", "研究思路"]
 
-# summary_note 生成的阅读笔记统一命名为 <论文标题>_note.md，该后缀不计入文献名。
-NOTE_SUFFIX = "_note"
+# summary_note 生成的阅读笔记统一命名为 `[note] <论文标题>.md`，该前缀不计入文献名。
+NOTE_PREFIX = "[note]"
 # 递归时跳过的工作目录与生成物
 SKIP_DIRS = {"_work", ".git"}
 SKIP_FILES = {"searching_readme.md"}
+# 输入/输出路径约定
+IN_DIR = r"D:\AIacademic\ReadPaper\notes_done"
+OUT_DIR = r"D:\AIacademic\ReadPaper\xlsx_summary"
+
 
 
 def norm(s):
@@ -64,10 +64,10 @@ def norm(s):
 
 
 def stem_key(name):
-    """文献名键：md 文件名去扩展名，并去除结尾的 `_note` 后缀。"""
+    """文献名键：md 文件名去扩展名，并去掉开头的 `[note] ` 前缀。"""
     stem = norm(Path(str(name)).stem)
-    if stem.lower().endswith(NOTE_SUFFIX):
-        stem = stem[: -len(NOTE_SUFFIX)].rstrip()
+    if stem.lower().startswith(NOTE_PREFIX):
+        stem = stem[len(NOTE_PREFIX):].strip()
     return stem
 
 
@@ -87,96 +87,6 @@ def list_md(folder):
             continue
         out.append(p)
     return sorted(out)
-
-
-# ---- 原 PDF 定位（年份/期刊在笔记正文与 md 文件名里都看不出时的兜底） ----
-
-MIN_PDF_SCORE = 0.6
-YEAR_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
-
-
-def norm_key(s):
-    """归一化：只保留数字、小写字母与汉字（一-鿿 即 U+4E00–U+9FFF），用于标题模糊匹配。"""
-    return re.sub(r"[^0-9a-z一-鿿]+", "", str(s).lower())
-
-
-def year_of(name):
-    """从名称中取第一个 4 位年份；取不到返回空串。"""
-    m = YEAR_RE.search(str(name))
-    return m.group(1) if m else ""
-
-
-def _score_title(key, pdf_path):
-    """「最长公共子串 ÷ 标题长度」打分；key 为空返回 0。"""
-    pk = norm_key(pdf_path.stem)
-    if not key or not pk:
-        return 0.0
-    size = difflib.SequenceMatcher(None, key, pk).find_longest_match().size
-    return size / len(key)
-
-
-# 副标题分隔符（中英文冒号）。原 PDF 文件名常把副标题截掉，
-# 若把副标题算进标题长度，主标题完全匹配的也会被稀释到阈值以下。
-SUBTITLE_SEPS = ("：", ":")
-
-
-def split_subtitle(s):
-    """取标题的副标题之前的部分（无副标题则原样返回）。"""
-    out = str(s)
-    for sep in SUBTITLE_SEPS:
-        if sep in out:
-            head = out.split(sep, 1)[0].strip()
-            if head:
-                out = head
-    return out
-
-
-def best_in(key, cands):
-    """在 cands 里取标题得分最高者，返回 (Path|None, 分数)。"""
-    best, best_score = None, 0.0
-    for p in cands:
-        score = _score_title(key, p)
-        if score > best_score:
-            best, best_score = p, score
-    return best, best_score
-
-
-def match_pdf(title, pdf_dir, year=""):
-    """在 pdf_dir 下匹配原 PDF，返回 (Path|None, 相似度, 是否经年份筛选)。
-
-    原 PDF 文件名形如「作者 - 年份 - 标题.pdf」或「作者_年份_标题.pdf」，
-    常带作者/年份前缀、且可能被截断，故用「最长公共子串 ÷ 标题长度」打分；
-    标题带副标题（冒号后）时只取主标题，避免被截断的文件名稀释得分。
-
-    先用年份筛：若已知文献年份 year 且 pdf_dir 中存在年份与之相符的 PDF，
-    就只在这些候选里比标题 —— 同一作者不同年份的同名论文（如
-    `Hausman_1987_...pdf` 与 `Hausman_2022_5.pdf`）因此不会再互抢。
-    筛不出任何候选（或未给 year）时回退到全目录比较。
-    """
-    root = Path(pdf_dir)
-    key = norm_key(split_subtitle(title))
-    if not key or len(key) < 8 or not root.is_dir():
-        return None, 0.0, False
-    same_year = [p for p in sorted(root.glob("*.pdf")) if year and year_of(p.stem) == str(year)]
-    if same_year:
-        hit, score = best_in(key, same_year)
-        # 同一年份里没有标题相近的（如原 PDF 文件名只有作者+年份+序号），
-        # 就不必再拿这一年的无关 PDF 来充数，交给阈值判为未命中。
-        return hit, score, score >= MIN_PDF_SCORE
-    hit, score = best_in(key, sorted(root.glob("*.pdf")))
-    return hit, score, False
-
-
-def pdf_hit(title, pdf_dir, year="", min_score=MIN_PDF_SCORE):
-    """匹配成功返回 {"pdf","pdf_year","pdf_score"}（按年份筛选时另附 pdf_year_filter=True），
-    否则返回空 dict。"""
-    hit, score, by_year = match_pdf(title, pdf_dir, year)
-    if hit is None or score < min_score:
-        return {}
-    res = {"pdf": str(hit), "pdf_year": year_of(hit.stem), "pdf_score": round(score, 3)}
-    if by_year:
-        res["pdf_year_filter"] = True
-    return res
 
 
 def existing_names(xlsx):
@@ -212,11 +122,7 @@ def cmd_extract(args):
     for p in list_md(args.folder):
         if stem_key(p.name) in have:
             continue
-        item = {"filename": p.name, "stem": stem_key(p.name), "text": md_to_text(p)}
-        if args.pdf_dir:
-            # 标题里带年份时先按年份筛，避开同一作者不同年份的同名论文。
-            item.update(pdf_hit(stem_key(p.name), args.pdf_dir, year_of(stem_key(p.name))))
-        new.append(item)
+        new.append({"filename": p.name, "stem": stem_key(p.name), "text": md_to_text(p)})
     emit({"existing": sorted(have), "new": new}, args.json_out,
          {"existing_count": len(have), "new_count": len(new)})
 
@@ -268,15 +174,12 @@ def main():
     ap = argparse.ArgumentParser(description="文献总结表工具")
     sub = ap.add_subparsers(dest="cmd", required=True)
     e = sub.add_parser("extract")
-    e.add_argument("--folder", default="note")
-    e.add_argument("--out", default="paper_archiving.xlsx")
+    e.add_argument("--folder", default=IN_DIR)
+    e.add_argument("--out", default=str(Path(OUT_DIR) / "paper_archiving.xlsx"))
     e.add_argument("--json-out", dest="json_out", default=None)
-    e.add_argument("--pdf-dir", dest="pdf_dir", default=None,
-                   help="原 PDF 所在目录；给出后为每篇匹配原 PDF（按年份筛后再比标题）"
-                        "并附 pdf/pdf_year/pdf_score")
     e.set_defaults(func=cmd_extract)
     w = sub.add_parser("write")
-    w.add_argument("--out", default="paper_archiving.xlsx")
+    w.add_argument("--out", default=str(Path(OUT_DIR) / "paper_archiving.xlsx"))
     w.add_argument("--data", required=True)
     w.set_defaults(func=cmd_write)
     args = ap.parse_args()

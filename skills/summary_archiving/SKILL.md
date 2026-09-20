@@ -1,6 +1,6 @@
 ---
 name: summary_archiving
-description: 读取文献文件夹（默认 note，递归含子文件夹）中的 markdown（.md），逐篇生成或更新文献总结表 paper_archiving.xlsx（每篇文献一行）。触发示例：「总结文献」「整理文献」「归档文献」「生成文献总结表」。
+description: 读取文献文件夹（默认 D:\AIacademic\ReadPaper\notes_done，递归含子文件夹）中的 markdown（.md），逐篇生成或更新文献总结表 paper_archiving.xlsx（每篇文献一行）。触发示例：「总结文献」「整理文献」「归档文献」「生成文献总结表」。
 ---
 
 # summary_archiving — 文献总结表
@@ -8,10 +8,11 @@ description: 读取文献文件夹（默认 note，递归含子文件夹）中�
 把文献文件夹里的 markdown（`.md`）逐篇读完，汇总成「每篇一行」的文献总结表 `paper_archiving.xlsx`。
 
 ## 参数与默认值
-- 目标文件夹：用户指定，否则默认项目根目录下的 `note\`（递归）。
+- 目标文件夹（输入）：用户指定，否则默认 `D:\AIacademic\ReadPaper\notes_done`（递归）。
 - 指定文件：用户指定，否则处理文件夹中全部 `.md`。
-- 输出文件名：用户指定，否则默认 `paper_archiving.xlsx`（生成在项目根目录）。
-- 原 PDF 目录：用户指定（如 `D:\AIacademic\ReadPaper\pdf_done`），用于补齐年份与期刊；未指定则跳过此步。
+- 输出文件夹：用户指定，否则默认 `D:\AIacademic\ReadPaper\xlsx_summary`。
+- 输出文件名：用户指定，否则默认 `paper_archiving.xlsx`（生成在上述输出文件夹内，即 `D:\AIacademic\ReadPaper\xlsx_summary\paper_archiving.xlsx`）。
+- 原 PDF 目录：**不使用**。年份与期刊只依据文献本身（笔记文件名与笔记正文）确认，不查找、不读取原 PDF。
 
 ## 脚本
 `scripts/archiving.py`（与本 SKILL.md 同级的 scripts 目录，用其绝对路径调用 `python`）。
@@ -19,27 +20,26 @@ description: 读取文献文件夹（默认 note，递归含子文件夹）中�
 ## 流程
 1. **抽取待处理文献**（结果写入工作文件，避免大体量输出）：
    ```
-   python <脚本绝对路径> extract --folder <目标文件夹> --out <输出.xlsx> --json-out _work\archiving_extract.json --pdf-dir <原PDF目录>
+   python <脚本绝对路径> extract --folder D:\AIacademic\ReadPaper\notes_done --out D:\AIacademic\ReadPaper\xlsx_summary\paper_archiving.xlsx --json-out _work\archiving_extract.json
    ```
    stdout 打印摘要 `{"existing_count","new_count","json_out"}`；完整数据在 `_work\archiving_extract.json`：
    `{"existing":[...已收录...], "new":[{"filename","stem","text"},...]}`。
-   `new` 为尚未收录的文献（已收录的自动忽略，实现增量更新去重）。
-   给了 `--pdf-dir` 时，命中原 PDF 的条目会多出 `pdf`（PDF 全路径）、`pdf_year`（取自 PDF 文件名）、`pdf_score`（匹配相似度）三个键；`pdf_year` 为空表示 PDF 文件名里没有年份。
+   `new` 为尚未收录的文献（已收录的自动忽略，实现增量更新去重）。条目只含 `filename`、`stem`、`text` 三个键。
 2. 若 `new_count` 为 0 → 告知用户没有新文献需要添加，结束。
 3. **逐篇生成总结**：用 Read 工具读取 `_work\archiving_extract.json`（文献多时分批读取 `new`），阅读每篇 `text`，按下方列模板生成一行。文字精简，能用关键词/短句就不写整句。
-   - 年份或期刊在正文、文件名里都看不出、而条目带有 `pdf` 时，用 Read 工具读那份 PDF 的**首页**（Read 的 `pages` 参数，如 `pages: "1"`）确认；PDF 是不可编辑的输入，只读不改。
+   - 年份或期刊在笔记正文、文件名里都看不出时**留空**即可。**不要**为此去查找或读取原 PDF 文件（如 `pdf_done`），也不要联网检索。
 4. 把所有行汇总为 JSON 数组写入临时文件 `rows.json`（UTF-8），每个元素含下列键。
 5. **写入表格**：
    ```
-   python <脚本绝对路径> write --out <输出.xlsx> --data rows.json
+   python <脚本绝对路径> write --out D:\AIacademic\ReadPaper\xlsx_summary\paper_archiving.xlsx --data rows.json
    ```
    脚本会追加写入（按文献名去重）、设置单元格自动换行、表头加粗、冻结首行。
 6. 向用户报告新增条数与表格路径，并删除临时 `rows.json` 与 `_work\archiving_extract.json`。
 
 ## 列模板（每行的 JSON 键，从左到右）
-- `文献名`：论文标题。取 md 文件名并去掉扩展名与结尾的 `_note` 后缀（如 `xxx_note.md` → `xxx`），去重以它为准。
-- `发表年份`：只依据文献正文或文件名判断，**不联网检索**；正文与文件名都看不出时，才用 extract 给出的 `pdf_year`（取自原 PDF 文件名）。都没有就留空。
-- `期刊`：先看笔记正文与文件名；看不出时读 `pdf`（原 PDF）的**首页或页脚**判断——出版社/期刊标志通常在页面底部，如 `Sign Systems Studies 43(4), 2015, 399–418`。仍未找到就留空。
+- `文献名`：论文标题。取 md 文件名并去掉扩展名与开头的 `[note] ` 前缀（如 `[note] xxx.md` → `xxx`），去重以它为准。
+- `发表年份`：只依据文献本身判断，即 md 文件名与笔记正文，**不联网检索、不读取原 PDF**；看不出就留空。
+- `期刊`：只依据文献本身判断，即 md 文件名与笔记正文（刊名/卷期常出现在笔记首页、页脚或文末著录）；看不出就留空。**不读取原 PDF**。
 - `摘要`：研究背景（一句）／解决方案（一句）／创新点（一句）
 - `研究内容`：研究问题（一句）／研究方法（关键词或短句）
 - `主要结果`：分点短句，与数据分析方法一一对应，如「结果1：xxx，数据分析方法：xxx；结果2：…」
@@ -49,6 +49,8 @@ description: 读取文献文件夹（默认 note，递归含子文件夹）中�
 - 自动跳过隐藏文件（以 `.` 开头）、`_work\` 目录，以及生成的 `searching_readme.md`。
 - 文件名支持中英文混合与较长名称，按原样保留。
 - 表格若已存在，`write` 按文献名自动去重，可安全地重复运行。
+- 输出表格固定在输出文件夹 `D:\AIacademic\ReadPaper\xlsx_summary` 内，不要写到项目根目录或其他位置。
+- 年份与期刊的资料源只有两处：笔记文件名、笔记正文。原 PDF（`pdf_done`）不在流程之内。
 
 ## 大批量处理模式（文献数 > 20 篇时推荐，在 `/loop` 下运行）
 

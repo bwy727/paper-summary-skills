@@ -4,14 +4,14 @@
 answering.py — 文献问答工具
 
 子命令：
-  dump --root .
+  dump [--root OUT_DIR]
       检测 keyword_summary.xlsx / paper_archiving.xlsx 是否存在，并输出其内容 JSON：
       {"has_keyword":bool, "has_archiving":bool,
        "keyword": {"papers":[{"文献名","keywords":[...]}]},
        "archiving": {"columns":[...], "rows":[{...}]}}
       （供 Claude 据问题语义筛选文献）
 
-  scanmd --folder note
+  scanmd [--folder IN_DIR]
       无表时的兜底：递归读取 md 全文，输出 [{"filename","stem","text"},...]
 
   genmd --out 关键词.md --data names.json
@@ -20,6 +20,10 @@ answering.py — 文献问答工具
 
   filter --archiving paper_archiving.xlsx --names names.json --out 关键词_文献总结筛选.xlsx
       从文献总结表中筛出这些文献名对应的行，另存为新表（保留表头与格式）。
+
+默认路径：输入 IN_DIR = D:/AIacademic/ReadPaper/notes_done，
+输出 OUT_DIR = D:/AIacademic/ReadPaper/xlsx_summary。
+只给文件名（不含目录）的 --out / --archiving 一律落在 OUT_DIR 内。
 """
 import argparse
 import importlib
@@ -49,11 +53,23 @@ from openpyxl import Workbook, load_workbook  # noqa: E402
 from openpyxl.styles import Alignment, Font, PatternFill  # noqa: E402
 from openpyxl.utils import get_column_letter  # noqa: E402
 
-# summary_note 生成的阅读笔记统一命名为 <论文标题>_note.md，该后缀不计入文献名。
-NOTE_SUFFIX = "_note"
+# summary_note 生成的阅读笔记统一命名为 `[note] <论文标题>.md`，该前缀不计入文献名。
+NOTE_PREFIX = "[note]"
 # 递归时跳过的工作目录与生成物
 SKIP_DIRS = {"_work", ".git"}
 SKIP_FILES = {"searching_readme.md"}
+# 输入/输出路径约定
+IN_DIR = r"D:\AIacademic\ReadPaper\notes_done"
+OUT_DIR = r"D:\AIacademic\ReadPaper\xlsx_summary"
+
+
+
+def resolve_out(p, default_dir=OUT_DIR):
+    """只给文件名（不含目录）时落在输出文件夹内；给了路径则按原样使用。"""
+    q = Path(str(p))
+    if q.is_absolute() or q.parent != Path("."):
+        return q
+    return Path(default_dir) / q
 
 
 def norm(s):
@@ -61,10 +77,10 @@ def norm(s):
 
 
 def stem_key(name):
-    """文献名键：md 文件名去扩展名，并去除结尾的 `_note` 后缀。"""
+    """文献名键：md 文件名去扩展名，并去掉开头的 `[note] ` 前缀。"""
     stem = norm(Path(str(name)).stem)
-    if stem.lower().endswith(NOTE_SUFFIX):
-        stem = stem[: -len(NOTE_SUFFIX)].rstrip()
+    if stem.lower().startswith(NOTE_PREFIX):
+        stem = stem[len(NOTE_PREFIX):].strip()
     return stem
 
 
@@ -124,10 +140,18 @@ def _emit(obj, json_out, summary):
         print(json.dumps(obj, ensure_ascii=False))
 
 
+def _find_table(root, name):
+    """先在 root 下找，再在 root/xlsx_summary 下找（兼容传 --root . 的旧调用）。"""
+    for p in (root / name, root / "xlsx_summary" / name):
+        if p.exists():
+            return p
+    return root / name
+
+
 def cmd_dump(args):
     root = Path(args.root)
-    kw_path = root / "keyword_summary.xlsx"
-    ar_path = root / "paper_archiving.xlsx"
+    kw_path = _find_table(root, "keyword_summary.xlsx")
+    ar_path = _find_table(root, "paper_archiving.xlsx")
     out = {"has_keyword": kw_path.exists(), "has_archiving": ar_path.exists()}
     if kw_path.exists():
         out["keyword"] = read_keyword(kw_path)
@@ -170,11 +194,13 @@ def cmd_genmd(args):
     data = json.loads(Path(args.data).read_text(encoding="utf-8"))
     direct = data.get("direct", [])
     related = data.get("related", [])
+    out = resolve_out(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
     lines = ["# %s" % data.get("question", "文献名单"), ""]
     _md_section(lines, "可直接回答的文献", direct, "如何回答：")
     _md_section(lines, "话题相关的文献", related, "相关之处：")
-    Path(args.out).write_text("\n".join(lines), encoding="utf-8")
-    print(json.dumps({"out": args.out, "direct": len(direct), "related": len(related)},
+    out.write_text("\n".join(lines), encoding="utf-8")
+    print(json.dumps({"out": str(out), "direct": len(direct), "related": len(related)},
                      ensure_ascii=False))
 
 
@@ -185,7 +211,7 @@ def cmd_filter(args):
         wanted = set(stem_key(item_name(it)) for it in items)
     else:
         wanted = set(stem_key(item_name(it)) for it in names)
-    src = load_workbook(str(args.archiving))
+    src = load_workbook(str(resolve_out(args.archiving)))
     sws = src.active
     header = [c.value for c in sws[1]]
     wb = Workbook()
@@ -212,8 +238,10 @@ def cmd_filter(args):
             ws.cell(row=rr, column=cc).alignment = Alignment(wrap_text=True, vertical="top")
     ws.freeze_panes = "A2"
     src.close()
-    wb.save(args.out)
-    print(json.dumps({"out": args.out, "kept": kept}, ensure_ascii=False))
+    out = resolve_out(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(str(out))
+    print(json.dumps({"out": str(out), "kept": kept}, ensure_ascii=False))
 
 
 def main():
@@ -221,17 +249,17 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     d = sub.add_parser("dump")
-    d.add_argument("--root", default=".")
+    d.add_argument("--root", default=OUT_DIR)
     d.add_argument("--json-out", dest="json_out", default=None)
     d.set_defaults(func=cmd_dump)
 
     s = sub.add_parser("scanmd")
-    s.add_argument("--folder", default="note")
+    s.add_argument("--folder", default=IN_DIR)
     s.add_argument("--json-out", dest="json_out", default=None)
     s.set_defaults(func=cmd_scanmd)
 
     g = sub.add_parser("genmd")
-    g.add_argument("--out", required=True)
+    g.add_argument("--out", default="文献名单.md")
     g.add_argument("--data", required=True)
     g.set_defaults(func=cmd_genmd)
 
