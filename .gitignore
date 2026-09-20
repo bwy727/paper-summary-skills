@@ -8,10 +8,6 @@ _work/
 *.docx
 searching_readme.md
 
-# note 只上传空文件夹：忽略其内部所有内容，但保留 .gitkeep
-note/*
-!note/.gitkeep
-
 # 系统
 .DS_Store
 Thumbs.db
